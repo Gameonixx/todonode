@@ -1,0 +1,12 @@
+{
+  "name": "temp-react-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simple full-stack note application with React and Node.js (in-memory, no database)",
+  "scripts": {
+    "start": "node backend/server.js",
+    "server": "node backend/server.js",
+    "client": "npm run dev --prefix frontend",
+    "build": "npm run build --prefix frontend"
+  }
+}
