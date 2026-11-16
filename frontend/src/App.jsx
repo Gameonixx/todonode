@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api/notes';
+const API_URL = import.meta.env.VITE_API_URL || '/api/notes';
 
 export default function App() {
   const [notes, setNotes] = useState([]);
@@ -30,7 +30,7 @@ export default function App() {
     } catch (err) {
       console.error('Failed to fetch notes:', err);
       setServerOnline(false);
-      setError('Cannot connect to backend server. Make sure "node server.js" is running on port 5000.');
+      setError('Cannot connect to backend server. Make sure the backend server is running.');
     } finally {
       setLoading(false);
     }
@@ -150,7 +150,7 @@ export default function App() {
         <div className="header-status">
           <span className={`status-badge ${serverOnline ? 'online' : 'offline'}`}>
             <span className="status-dot"></span>
-            {serverOnline ? 'Backend Online (Port 5000)' : 'Backend Offline'}
+            {serverOnline ? 'Backend Online' : 'Backend Offline'}
           </span>
           <button className="btn-secondary btn-sm" onClick={fetchNotes} title="Refresh notes">
             ↻ Refresh
