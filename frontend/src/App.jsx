@@ -9,6 +9,7 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [serverOnline, setServerOnline] = useState(false);
+  const [dbMode, setDbMode] = useState('');
   const [error, setError] = useState(null);
 
   // Editing state
@@ -27,6 +28,22 @@ export default function App() {
       setNotes(data);
       setServerOnline(true);
       setError(null);
+
+      // Check DB mode from health check
+      try {
+        const healthUrl = API_URL.replace(/\/notes\/?$/, '/health');
+        const healthRes = await fetch(healthUrl);
+        if (healthRes.ok) {
+          const healthData = await healthRes.json();
+          if (healthData.mode === 'sql-database') {
+            setDbMode('SQL Database');
+          } else {
+            setDbMode('In-Memory');
+          }
+        }
+      } catch (e) {
+        // Ignore health check error if notes succeeded
+      }
     } catch (err) {
       console.error('Failed to fetch notes:', err);
       setServerOnline(false);
@@ -150,7 +167,7 @@ export default function App() {
         <div className="header-status">
           <span className={`status-badge ${serverOnline ? 'online' : 'offline'}`}>
             <span className="status-dot"></span>
-            {serverOnline ? 'Backend Online' : 'Backend Offline'}
+            {serverOnline ? (dbMode ? `Backend Online (${dbMode})` : 'Backend Online') : 'Backend Offline'}
           </span>
           <button className="btn-secondary btn-sm" onClick={fetchNotes} title="Refresh notes">
             ↻ Refresh
