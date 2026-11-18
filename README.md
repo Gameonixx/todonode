@@ -1,58 +1,91 @@
-# Simple Notes Application (React + Node.js)
+# Simple Notes Application (React + Node.js + SQL + AWS S3)
 
-A clean, fast, and simple full-stack note application built with **React** (frontend) and **Node.js / Express** (backend). Notes are stored **in-memory** on the server (no database required).
-
----
-
-## 📁 Project Structure
-
-```text
-temp react app/
-├── backend/
-│   ├── server.js          # Express server with REST API (CRUD) & static file serving
-│   ├── package.json       # Backend dependencies (express, cors)
-│   └── node_modules/
-├── frontend/
-│   ├── index.html         # HTML entry point
-│   ├── vite.config.js     # Vite dev config with API proxy
-│   ├── package.json       # React & Vite dependencies
-│   ├── src/
-│   │   ├── App.jsx        # Main React component (CRUD, search, edit, responsive UI)
-│   │   ├── App.css        # Clean, modern styles
-│   │   └── main.jsx       # React DOM root entry
-│   └── dist/              # Production build (served automatically by backend)
-└── package.json           # Root convenience scripts
-```
+A full-stack note application built with **React** (frontend), **Node.js / Express** (backend), **MySQL / In-Memory** (database), and **AWS S3** (cloud file storage).
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Running on Localhost
 
-### 1. Run the Backend (Port 5000)
-
-From the project root:
+### 1. Configure Environment Variables (Optional for S3 & MySQL)
+In `backend/`, copy the example file to `.env`:
 ```bash
-npm start
+cp backend/.env.example backend/.env
 ```
-*Or navigate to the backend folder:*
+Inside `backend/.env`:
+```env
+PORT=5000
+
+# Database (Leave as localhost; if MySQL is not running, it gracefully falls back to in-memory)
+DB_HOST=localhost
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=notesdb
+DB_PORT=3306
+
+# AWS S3 Configuration (for cloud file uploads)
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_REGION=us-east-1
+AWS_BUCKET_NAME=your-bucket-name
+```
+> 💡 **Graceful Fallback**: If AWS S3 credentials are not configured, files upload to the local `backend/uploads/` folder automatically. If MySQL is not running, notes persist in memory.
+
+---
+
+### 2. Start the Backend (Port 5000)
 ```bash
 cd backend
+npm install
 node server.js
 ```
-The server will start at: `http://localhost:5000`
-
-> 💡 **Bonus**: The backend automatically serves the built React app! Once the backend is running, you can immediately open `http://localhost:5000` in your browser.
+The backend will run at: `http://localhost:5000`
 
 ---
 
-### 2. Run the Frontend (Vite Dev Server, Port 3000)
-
-If you want live hot-reloading during development:
+### 3. Start the Frontend (Port 3000)
+In a separate terminal:
 ```bash
 cd frontend
+npm install
 npm run dev
 ```
-Open `http://localhost:3000` in your browser.
+Open **`http://localhost:3000`** in your browser.
+
+> 💡 **Production Build**: You can also just open `http://localhost:5000` directly after starting the backend, as the backend automatically serves the compiled React app!
+
+---
+
+## ☁️ AWS S3 Setup Guide
+
+To store uploads in AWS S3:
+1. Create an S3 Bucket in the AWS Console (e.g., `my-notes-bucket`).
+2. Uncheck **Block all public access** if you want uploaded files/images to be viewable directly via URL, or configure a bucket policy:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Sid": "PublicReadGetObject",
+         "Effect": "Allow",
+         "Principal": "*",
+         "Action": "s3:GetObject",
+         "Resource": "arn:aws:s3:::your-bucket-name/*"
+       }
+     ]
+   }
+   ```
+3. Set your bucket's **CORS configuration**:
+   ```json
+   [
+     {
+       "AllowedHeaders": ["*"],
+       "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
+       "AllowedOrigins": ["*"],
+       "ExposeHeaders": []
+     }
+   ]
+   ```
+4. Put your AWS Access Key, Secret Key, Region, and Bucket Name into `backend/.env`.
 
 ---
 
@@ -61,17 +94,16 @@ Open `http://localhost:3000` in your browser.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/notes` | Fetch all notes (sorted newest first) |
-| `POST` | `/api/notes` | Create a new note (`{ title, content }`) |
-| `PUT` | `/api/notes/:id` | Update an existing note (`{ title, content }`) |
-| `DELETE` | `/api/notes/:id` | Delete a note by its ID |
-| `GET` | `/api/health` | Health check and current notes count |
+| `POST` | `/api/notes` | Create a note (`{ title, content, fileUrl, fileName }`) |
+| `POST` | `/api/upload` | Upload file/image to AWS S3 (or local fallback) |
+| `PUT` | `/api/notes/:id` | Update note title, content, or attachment |
+| `DELETE` | `/api/notes/:id` | Delete a note by ID |
+| `GET` | `/api/health` | Health check (reports DB and S3 status) |
 
 ---
 
-## ✨ Features Included
-
-- **Full In-Memory CRUD**: Create, read, edit, and delete notes.
-- **Search & Filter**: Real-time instant filtering of notes by title or content.
-- **Connection Status Badge**: Indicates live backend connectivity.
-- **Production Build Included**: Pre-built in `frontend/dist/` so running `node backend/server.js` works instantly.
-- **Responsive Design**: Clean, modern card layout that works on desktop and mobile.
+## ✨ Features
+- **Localhost Readiness**: Runs with 1 command locally without complex server setups.
+- **AWS S3 File Upload**: Direct integration with AWS S3 SDK v3 for images and documents.
+- **Image Previews & Attachments**: Automatically renders thumbnail previews for images and clickable download badges for files.
+- **Dual Fallbacks**: Graceful fallback to local storage if S3 keys are absent, and fallback to in-memory store if MySQL is not running.

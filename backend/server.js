@@ -2,7 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const mysql = require('mysql2/promise');
+const multer = require('multer');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -11,7 +14,39 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Database configuration
+// ----------------- AWS S3 CONFIGURATION ----------------- //
+const s3Bucket = process.env.AWS_BUCKET_NAME;
+const s3Region = process.env.AWS_REGION || 'us-east-1';
+const hasS3Config = !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY && s3Bucket);
+
+let s3Client = null;
+if (hasS3Config) {
+  s3Client = new S3Client({
+    region: s3Region,
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+    }
+  });
+  console.log(`📦 [Storage] AWS S3 connected for bucket: ${s3Bucket} (${s3Region})`);
+} else {
+  console.log('📁 [Storage] AWS S3 credentials not set in .env. Using local storage fallback for uploads.');
+}
+
+// Local uploads directory (fallback if S3 credentials not yet provided)
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+app.use('/uploads', express.static(uploadsDir));
+
+// Multer memory storage (allows buffering to S3 or local disk)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 } // 25MB max file size
+});
+
+// ----------------- DATABASE CONFIGURATION ----------------- //
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
@@ -21,24 +56,28 @@ const dbConfig = {
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  connectTimeout: 5000 // 5 seconds timeout
+  connectTimeout: 5000
 };
 
 let dbPool = null;
 let isDbConnected = false;
 
-// In-memory fallback if DB is not yet running/configured
+// In-memory fallback if DB is not yet running
 let inMemoryNotes = [
   {
     id: 1,
     title: 'Welcome to Notes App',
-    content: 'This application is running with React, Node.js, and SQL database support.',
+    content: 'Running locally on your machine with React, Node.js, and AWS S3 upload support!',
+    fileUrl: null,
+    fileName: null,
     createdAt: new Date().toLocaleString()
   },
   {
     id: 2,
-    title: '3-Tier Architecture on AWS',
-    content: 'Tier 1: Frontend EC2 (React + Nginx)\nTier 2: Backend EC2 (Node.js + Express)\nTier 3: Database EC2 (MySQL Server)',
+    title: 'File Uploads with S3',
+    content: 'Use the file upload button below to attach images or documents. Files will be stored in your AWS S3 bucket!',
+    fileUrl: null,
+    fileName: null,
     createdAt: new Date().toLocaleString()
   }
 ];
@@ -46,7 +85,6 @@ let inMemoryNotes = [
 // Initialize MySQL Database & Table
 async function initDB() {
   try {
-    // 1. Connect without database first to ensure database exists
     const rootConnection = await mysql.createConnection({
       host: dbConfig.host,
       user: dbConfig.user,
@@ -58,28 +96,31 @@ async function initDB() {
     await rootConnection.query(`CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\`;`);
     await rootConnection.end();
 
-    // 2. Create pool connected to database
     dbPool = mysql.createPool(dbConfig);
     const connection = await dbPool.getConnection();
 
-    // 3. Create notes table
     await connection.query(`
       CREATE TABLE IF NOT EXISTS notes (
         id INT AUTO_INCREMENT PRIMARY KEY,
         title VARCHAR(255) NOT NULL,
         content TEXT,
+        fileUrl VARCHAR(1000),
+        fileName VARCHAR(255),
         createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
         updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       );
     `);
 
-    // 4. Seed sample data if table is empty
+    // Ensure columns exist if table was created in an older version
+    try { await connection.query('ALTER TABLE notes ADD COLUMN fileUrl VARCHAR(1000)'); } catch(e) {}
+    try { await connection.query('ALTER TABLE notes ADD COLUMN fileName VARCHAR(255)'); } catch(e) {}
+
     const [rows] = await connection.query('SELECT COUNT(*) as count FROM notes');
     if (rows[0].count === 0) {
       await connection.query(`
-        INSERT INTO notes (title, content) VALUES
-        ('Welcome to Notes App (SQL Database)', 'Notes are now saved in MySQL database on Tier 3.'),
-        ('3-Tier Architecture on AWS', 'Tier 1: Frontend (React)\nTier 2: Backend (Node.js)\nTier 3: Database (MySQL)');
+        INSERT INTO notes (title, content, fileUrl, fileName) VALUES
+        ('Welcome to Notes App (SQL + S3)', 'Notes are saved in MySQL database and files upload to AWS S3.', NULL, NULL),
+        ('File Upload Feature', 'Attach any file or image when creating a note.', NULL, NULL);
       `);
     }
 
@@ -92,7 +133,6 @@ async function initDB() {
   }
 }
 
-// Start database initialization
 initDB();
 
 // ----------------- ROUTES ----------------- //
@@ -103,8 +143,65 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     mode: isDbConnected ? 'sql-database' : 'in-memory-fallback',
     dbHost: dbConfig.host,
-    dbConnected: isDbConnected
+    dbConnected: isDbConnected,
+    storage: hasS3Config ? 's3' : 'local',
+    s3Bucket: hasS3Config ? s3Bucket : null,
+    s3Region: hasS3Config ? s3Region : null
   });
+});
+
+// POST /api/upload - Upload file to AWS S3 (or local fallback)
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file provided' });
+    }
+
+    const originalName = req.file.originalname;
+    const sanitizedName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const fileKey = `notes-${Date.now()}-${sanitizedName}`;
+
+    if (hasS3Config && s3Client) {
+      // Upload directly to AWS S3
+      const command = new PutObjectCommand({
+        Bucket: s3Bucket,
+        Key: fileKey,
+        Body: req.file.buffer,
+        ContentType: req.file.mimetype
+      });
+
+      await s3Client.send(command);
+      const fileUrl = `https://${s3Bucket}.s3.${s3Region}.amazonaws.com/${fileKey}`;
+      console.log(`☁️ [S3 Upload] Successfully uploaded to S3: ${fileUrl}`);
+
+      return res.status(200).json({
+        success: true,
+        fileUrl,
+        fileName: originalName,
+        storage: 's3',
+        bucket: s3Bucket
+      });
+    } else {
+      // Local storage fallback
+      const localFilePath = path.join(uploadsDir, fileKey);
+      fs.writeFileSync(localFilePath, req.file.buffer);
+
+      const host = req.get('host') || `localhost:${PORT}`;
+      const protocol = req.protocol || 'http';
+      const fileUrl = `${protocol}://${host}/uploads/${fileKey}`;
+      console.log(`💾 [Local Upload] Saved to local storage: ${fileUrl}`);
+
+      return res.status(200).json({
+        success: true,
+        fileUrl,
+        fileName: originalName,
+        storage: 'local'
+      });
+    }
+  } catch (err) {
+    console.error('File upload error:', err);
+    res.status(500).json({ error: `File upload failed: ${err.message}` });
+  }
 });
 
 // GET all notes
@@ -112,7 +209,7 @@ app.get('/api/notes', async (req, res) => {
   if (isDbConnected && dbPool) {
     try {
       const [rows] = await dbPool.query(`
-        SELECT id, title, content,
+        SELECT id, title, content, fileUrl, fileName,
                DATE_FORMAT(createdAt, '%d/%m/%Y, %h:%i:%s %p') AS createdAt,
                DATE_FORMAT(updatedAt, '%d/%m/%Y, %h:%i:%s %p') AS updatedAt
         FROM notes
@@ -125,29 +222,30 @@ app.get('/api/notes', async (req, res) => {
     }
   }
 
-  // Fallback
   res.json(inMemoryNotes);
 });
 
 // POST create a new note
 app.post('/api/notes', async (req, res) => {
-  const { title, content } = req.body || {};
+  const { title, content, fileUrl, fileName } = req.body || {};
 
-  if (!title && !content) {
-    return res.status(400).json({ error: 'Title or content is required' });
+  if (!title && !content && !fileUrl) {
+    return res.status(400).json({ error: 'Title, content, or attached file is required' });
   }
 
-  const noteTitle = title ? title.trim() : 'Untitled Note';
+  const noteTitle = title ? title.trim() : (fileName || 'Untitled Note');
   const noteContent = content ? content.trim() : '';
+  const noteFileUrl = fileUrl || null;
+  const noteFileName = fileName || null;
 
   if (isDbConnected && dbPool) {
     try {
       const [result] = await dbPool.query(
-        'INSERT INTO notes (title, content) VALUES (?, ?)',
-        [noteTitle, noteContent]
+        'INSERT INTO notes (title, content, fileUrl, fileName) VALUES (?, ?, ?, ?)',
+        [noteTitle, noteContent, noteFileUrl, noteFileName]
       );
       const [newRow] = await dbPool.query(`
-        SELECT id, title, content,
+        SELECT id, title, content, fileUrl, fileName,
                DATE_FORMAT(createdAt, '%d/%m/%Y, %h:%i:%s %p') AS createdAt
         FROM notes WHERE id = ?
       `, [result.insertId]);
@@ -164,6 +262,8 @@ app.post('/api/notes', async (req, res) => {
     id: Date.now(),
     title: noteTitle,
     content: noteContent,
+    fileUrl: noteFileUrl,
+    fileName: noteFileName,
     createdAt: new Date().toLocaleString()
   };
   inMemoryNotes.unshift(newNote);
@@ -173,7 +273,7 @@ app.post('/api/notes', async (req, res) => {
 // PUT update an existing note
 app.put('/api/notes/:id', async (req, res) => {
   const { id } = req.params;
-  const { title, content } = req.body || {};
+  const { title, content, fileUrl, fileName } = req.body || {};
 
   if (isDbConnected && dbPool) {
     try {
@@ -184,14 +284,16 @@ app.put('/api/notes/:id', async (req, res) => {
 
       const updatedTitle = title !== undefined ? title.trim() : existing[0].title;
       const updatedContent = content !== undefined ? content.trim() : existing[0].content;
+      const updatedFileUrl = fileUrl !== undefined ? fileUrl : existing[0].fileUrl;
+      const updatedFileName = fileName !== undefined ? fileName : existing[0].fileName;
 
       await dbPool.query(
-        'UPDATE notes SET title = ?, content = ? WHERE id = ?',
-        [updatedTitle, updatedContent, id]
+        'UPDATE notes SET title = ?, content = ?, fileUrl = ?, fileName = ? WHERE id = ?',
+        [updatedTitle, updatedContent, updatedFileUrl, updatedFileName, id]
       );
 
       const [updatedRow] = await dbPool.query(`
-        SELECT id, title, content,
+        SELECT id, title, content, fileUrl, fileName,
                DATE_FORMAT(createdAt, '%d/%m/%Y, %h:%i:%s %p') AS createdAt,
                DATE_FORMAT(updatedAt, '%d/%m/%Y, %h:%i:%s %p') AS updatedAt
         FROM notes WHERE id = ?
@@ -213,6 +315,8 @@ app.put('/api/notes/:id', async (req, res) => {
     ...inMemoryNotes[noteIndex],
     title: title !== undefined ? title.trim() : inMemoryNotes[noteIndex].title,
     content: content !== undefined ? content.trim() : inMemoryNotes[noteIndex].content,
+    fileUrl: fileUrl !== undefined ? fileUrl : inMemoryNotes[noteIndex].fileUrl,
+    fileName: fileName !== undefined ? fileName : inMemoryNotes[noteIndex].fileName,
     updatedAt: new Date().toLocaleString()
   };
   res.json(inMemoryNotes[noteIndex]);
@@ -250,7 +354,7 @@ app.use(express.static(frontendDistPath));
 
 if (require.main === module) {
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Backend server running at http://0.0.0.0:${PORT}`);
+    console.log(`Backend server running at http://localhost:${PORT}`);
   });
 }
 

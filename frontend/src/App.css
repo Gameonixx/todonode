@@ -488,3 +488,168 @@ button:disabled {
     width: 100%;
   }
 }
+
+
+/* ==========================================================================
+   AWS S3 File Upload & Attachment Styles
+   ========================================================================== */
+
+/* Subtitle */
+.brand-sub {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  display: block;
+}
+
+/* File Upload Styles */
+.file-upload-group {
+  margin-bottom: 1.25rem;
+}
+
+.btn-upload {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font-size: 0.9rem;
+  color: #4338ca;
+  background: #eef2ff;
+  border: 1.5px dashed #c7d2fe;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: all 0.2s ease;
+}
+
+.btn-upload:hover {
+  background: #e0e7ff;
+  border-color: #818cf8;
+}
+
+.selected-file-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: #f8fafc;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0.6rem 0.85rem;
+}
+
+.preview-thumbnail {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+}
+
+.file-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.file-name {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-size {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.btn-remove-file {
+  background: #fee2e2;
+  color: #dc2626;
+  border: none;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+}
+
+.btn-remove-file:hover {
+  background: #fca5a5;
+}
+
+/* Button Spinner */
+.btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+/* Note Attachments & Images */
+.note-image-container {
+  margin-bottom: 0.75rem;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  max-height: 220px;
+}
+
+.note-image-preview {
+  width: 100%;
+  height: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.2s ease;
+}
+
+.note-image-preview:hover {
+  transform: scale(1.02);
+}
+
+.note-attachment-wrapper {
+  margin-top: 0.65rem;
+  margin-bottom: 0.5rem;
+}
+
+.attachment-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: #4f46e5;
+  background: #eef2ff;
+  border: 1px solid #e0e7ff;
+  padding: 0.35rem 0.65rem;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  max-width: 100%;
+  word-break: break-all;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.attachment-link:hover {
+  background: #e0e7ff;
+  border-color: #c7d2fe;
+}
+
+.attachment-icon {
+  font-size: 0.95rem;
+}
+
+.attachment-arrow {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
