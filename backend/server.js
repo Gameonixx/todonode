@@ -6,6 +6,7 @@ const fs = require('fs');
 const mysql = require('mysql2/promise');
 const multer = require('multer');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -33,18 +34,37 @@ if (hasS3Config) {
   console.log('📁 [Storage] AWS S3 credentials not set in .env. Using local storage fallback for uploads.');
 }
 
-// Local uploads directory (fallback if S3 credentials not yet provided)
+// Local uploads directory (fallback)
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 app.use('/uploads', express.static(uploadsDir));
 
-// Multer memory storage (allows buffering to S3 or local disk)
+// Multer memory storage
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 } // 25MB max file size
+  limits: { fileSize: 25 * 1024 * 1024 }
 });
+
+// ----------------- AWS SES (EMAIL) CONFIGURATION ----------------- //
+const sesRegion = process.env.AWS_REGION || 'us-east-1';
+const hasSESConfig = !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+const defaultFromEmail = process.env.AWS_SES_FROM_EMAIL || 'support@aws-cloud-app.com';
+
+let sesClient = null;
+if (hasSESConfig) {
+  sesClient = new SESClient({
+    region: sesRegion,
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+    }
+  });
+  console.log(`✉️ [Email] AWS SES client active in region: ${sesRegion}`);
+} else {
+  console.log('✉️ [Email] AWS credentials not set for SES. Using simulated email dispatch fallback.');
+}
 
 // ----------------- DATABASE CONFIGURATION ----------------- //
 const dbConfig = {
@@ -62,7 +82,7 @@ const dbConfig = {
 let dbPool = null;
 let isDbConnected = false;
 
-// In-memory fallback if DB is not yet running
+// In-memory fallback stores
 let inMemoryNotes = [
   {
     id: 1,
@@ -82,7 +102,34 @@ let inMemoryNotes = [
   }
 ];
 
-// Initialize MySQL Database & Table
+let inMemoryEmails = [
+  {
+    id: 1,
+    folder: 'inbox',
+    from_email: 'notifications@aws.amazon.com',
+    to_email: defaultFromEmail,
+    cc: 'admin@cloudengg.local',
+    bcc: '',
+    subject: 'Welcome to AWS SES Email & Message Module',
+    body: 'Hello!\n\nYour message module is ready. You can receive incoming emails stored in your SQL database and compose new emails with standard features including To, From, Cc, Bcc, and Subject.\n\nEnjoy testing your full-stack cloud application!',
+    status: 'received',
+    createdAt: new Date().toLocaleString()
+  },
+  {
+    id: 2,
+    folder: 'inbox',
+    from_email: 'john.smith@gmail.com',
+    to_email: defaultFromEmail,
+    cc: 'team@cloudengg.local',
+    bcc: '',
+    subject: 'Cloud Project Milestone Review',
+    body: 'Hi there,\n\nI reviewed your 3-tier architecture with React frontend, Node.js backend, MySQL database, S3 file storage, and SES email integration. Everything is looking solid.\n\nLet me know when the final deployment is ready for presentation.\n\nBest,\nJohn Smith',
+    status: 'received',
+    createdAt: new Date(Date.now() - 3600000).toLocaleString()
+  }
+];
+
+// Initialize MySQL Database & Tables
 async function initDB() {
   try {
     const rootConnection = await mysql.createConnection({
@@ -99,6 +146,7 @@ async function initDB() {
     dbPool = mysql.createPool(dbConfig);
     const connection = await dbPool.getConnection();
 
+    // 1. Notes Table
     await connection.query(`
       CREATE TABLE IF NOT EXISTS notes (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -111,17 +159,42 @@ async function initDB() {
       );
     `);
 
-    // Ensure columns exist if table was created in an older version
     try { await connection.query('ALTER TABLE notes ADD COLUMN fileUrl VARCHAR(1000)'); } catch(e) {}
     try { await connection.query('ALTER TABLE notes ADD COLUMN fileName VARCHAR(255)'); } catch(e) {}
 
-    const [rows] = await connection.query('SELECT COUNT(*) as count FROM notes');
-    if (rows[0].count === 0) {
+    const [noteRows] = await connection.query('SELECT COUNT(*) as count FROM notes');
+    if (noteRows[0].count === 0) {
       await connection.query(`
         INSERT INTO notes (title, content, fileUrl, fileName) VALUES
         ('Welcome to Notes App (SQL + S3)', 'Notes are saved in MySQL database and files upload to AWS S3.', NULL, NULL),
         ('File Upload Feature', 'Attach any file or image when creating a note.', NULL, NULL);
       `);
+    }
+
+    // 2. Emails Table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS emails (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        folder VARCHAR(50) DEFAULT 'inbox',
+        from_email VARCHAR(255) NOT NULL,
+        to_email VARCHAR(255) NOT NULL,
+        cc VARCHAR(500),
+        bcc VARCHAR(500),
+        subject VARCHAR(500) NOT NULL,
+        body TEXT,
+        status VARCHAR(50) DEFAULT 'received',
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    const [emailRows] = await connection.query('SELECT COUNT(*) as count FROM emails');
+    if (emailRows[0].count === 0) {
+      for (const m of inMemoryEmails) {
+        await connection.query(`
+          INSERT INTO emails (folder, from_email, to_email, cc, bcc, subject, body, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [m.folder, m.from_email, m.to_email, m.cc, m.bcc, m.subject, m.body, m.status]);
+      }
     }
 
     connection.release();
@@ -146,11 +219,13 @@ app.get('/api/health', (req, res) => {
     dbConnected: isDbConnected,
     storage: hasS3Config ? 's3' : 'local',
     s3Bucket: hasS3Config ? s3Bucket : null,
-    s3Region: hasS3Config ? s3Region : null
+    s3Region: hasS3Config ? s3Region : null,
+    sesConfigured: hasSESConfig,
+    defaultFromEmail
   });
 });
 
-// POST /api/upload - Upload file to AWS S3 (or local fallback)
+// ----------------- FILE UPLOAD (AWS S3) ----------------- //
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -162,7 +237,6 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     const fileKey = `notes-${Date.now()}-${sanitizedName}`;
 
     if (hasS3Config && s3Client) {
-      // Upload directly to AWS S3
       const command = new PutObjectCommand({
         Bucket: s3Bucket,
         Key: fileKey,
@@ -182,7 +256,6 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         bucket: s3Bucket
       });
     } else {
-      // Local storage fallback
       const localFilePath = path.join(uploadsDir, fileKey);
       fs.writeFileSync(localFilePath, req.file.buffer);
 
@@ -203,6 +276,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     res.status(500).json({ error: `File upload failed: ${err.message}` });
   }
 });
+
+// ----------------- NOTES ROUTES ----------------- //
 
 // GET all notes
 app.get('/api/notes', async (req, res) => {
@@ -225,7 +300,7 @@ app.get('/api/notes', async (req, res) => {
   res.json(inMemoryNotes);
 });
 
-// POST create a new note
+// POST create a note
 app.post('/api/notes', async (req, res) => {
   const { title, content, fileUrl, fileName } = req.body || {};
 
@@ -257,7 +332,6 @@ app.post('/api/notes', async (req, res) => {
     }
   }
 
-  // Fallback
   const newNote = {
     id: Date.now(),
     title: noteTitle,
@@ -270,7 +344,7 @@ app.post('/api/notes', async (req, res) => {
   res.status(201).json(newNote);
 });
 
-// PUT update an existing note
+// PUT update a note
 app.put('/api/notes/:id', async (req, res) => {
   const { id } = req.params;
   const { title, content, fileUrl, fileName } = req.body || {};
@@ -306,7 +380,6 @@ app.put('/api/notes/:id', async (req, res) => {
     }
   }
 
-  // Fallback
   const noteIndex = inMemoryNotes.findIndex(n => String(n.id) === String(id));
   if (noteIndex === -1) {
     return res.status(404).json({ error: 'Note not found' });
@@ -322,7 +395,7 @@ app.put('/api/notes/:id', async (req, res) => {
   res.json(inMemoryNotes[noteIndex]);
 });
 
-// DELETE a note by id
+// DELETE a note
 app.delete('/api/notes/:id', async (req, res) => {
   const { id } = req.params;
 
@@ -339,7 +412,6 @@ app.delete('/api/notes/:id', async (req, res) => {
     }
   }
 
-  // Fallback
   const initialLength = inMemoryNotes.length;
   inMemoryNotes = inMemoryNotes.filter(n => String(n.id) !== String(id));
   if (inMemoryNotes.length === initialLength) {
@@ -348,13 +420,246 @@ app.delete('/api/notes/:id', async (req, res) => {
   res.json({ message: 'Note deleted successfully', id });
 });
 
+// ----------------- EMAIL & MESSAGE MODULE (AWS SES) ----------------- //
+
+// Helper to parse comma-separated emails
+const parseEmailList = (str) => {
+  if (!str) return [];
+  if (Array.isArray(str)) return str;
+  return str.split(',').map(s => s.trim()).filter(Boolean);
+};
+
+// GET /api/emails - Fetch all emails (stored in MySQL or in-memory)
+app.get('/api/emails', async (req, res) => {
+  const folder = req.query.folder; // 'inbox', 'sent', or undefined for all
+
+  if (isDbConnected && dbPool) {
+    try {
+      let query = `
+        SELECT id, folder, from_email, to_email, cc, bcc, subject, body, status,
+               DATE_FORMAT(createdAt, '%d/%m/%Y, %h:%i:%s %p') AS createdAt
+        FROM emails
+      `;
+      const params = [];
+
+      if (folder) {
+        query += ' WHERE folder = ? ';
+        params.push(folder);
+      }
+      query += ' ORDER BY id DESC;';
+
+      const [rows] = await dbPool.query(query, params);
+      return res.json(rows);
+    } catch (err) {
+      console.error('Database email fetch error:', err);
+      return res.status(500).json({ error: 'Failed to fetch emails from database' });
+    }
+  }
+
+  // In-memory fallback
+  let list = inMemoryEmails;
+  if (folder) {
+    list = list.filter(e => e.folder === folder);
+  }
+  res.json(list);
+});
+
+// POST /api/emails/send - Send an email via AWS SES and store in database
+app.post('/api/emails/send', async (req, res) => {
+  const { from, to, cc, bcc, subject, body } = req.body || {};
+
+  if (!to || !to.trim()) {
+    return res.status(400).json({ error: 'Recipient email (To) is required' });
+  }
+  if (!subject || !subject.trim()) {
+    return res.status(400).json({ error: 'Subject is required' });
+  }
+
+  const fromEmail = from && from.trim() ? from.trim() : defaultFromEmail;
+  const toEmail = to.trim();
+  const ccEmail = cc ? cc.trim() : '';
+  const bccEmail = bcc ? bcc.trim() : '';
+  const emailSubject = subject.trim();
+  const emailBody = body ? body.trim() : '';
+
+  let dispatchStatus = 'sent';
+  let deliveryMethod = 'simulated';
+  let sesMessageId = null;
+  let sesError = null;
+
+  // Attempt real delivery via AWS SES if credentials exist
+  if (hasSESConfig && sesClient) {
+    try {
+      const toAddresses = parseEmailList(toEmail);
+      const ccAddresses = parseEmailList(ccEmail);
+      const bccAddresses = parseEmailList(bccEmail);
+
+      const sesParams = {
+        Source: fromEmail,
+        Destination: {
+          ToAddresses: toAddresses,
+          CcAddresses: ccAddresses.length > 0 ? ccAddresses : undefined,
+          BccAddresses: bccAddresses.length > 0 ? bccAddresses : undefined
+        },
+        Message: {
+          Subject: { Data: emailSubject, Charset: 'UTF-8' },
+          Body: {
+            Text: { Data: emailBody, Charset: 'UTF-8' },
+            Html: {
+              Data: `<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #222;">
+                ${emailBody.replace(/\n/g, '<br/>')}
+              </div>`,
+              Charset: 'UTF-8'
+            }
+          }
+        }
+      };
+
+      const command = new SendEmailCommand(sesParams);
+      const sesResponse = await sesClient.send(command);
+      sesMessageId = sesResponse.MessageId;
+      deliveryMethod = 'aws-ses';
+      console.log(`✉️ [AWS SES] Email sent successfully to ${toEmail}. MessageId: ${sesMessageId}`);
+    } catch (err) {
+      console.warn(`⚠️ [AWS SES Warning] Could not dispatch email via SES (${err.message}). Storing in database as sent-simulated.`);
+      sesError = err.message;
+      deliveryMethod = 'simulated';
+      dispatchStatus = 'sent (simulated)';
+    }
+  }
+
+  // Store in MySQL database with folder = 'sent'
+  if (isDbConnected && dbPool) {
+    try {
+      const [result] = await dbPool.query(`
+        INSERT INTO emails (folder, from_email, to_email, cc, bcc, subject, body, status)
+        VALUES ('sent', ?, ?, ?, ?, ?, ?, ?)
+      `, [fromEmail, toEmail, ccEmail, bccEmail, emailSubject, emailBody, dispatchStatus]);
+
+      const [newRow] = await dbPool.query(`
+        SELECT id, folder, from_email, to_email, cc, bcc, subject, body, status,
+               DATE_FORMAT(createdAt, '%d/%m/%Y, %h:%i:%s %p') AS createdAt
+        FROM emails WHERE id = ?
+      `, [result.insertId]);
+
+      return res.status(201).json({
+        success: true,
+        email: newRow[0],
+        deliveryMethod,
+        messageId: sesMessageId,
+        warning: sesError
+      });
+    } catch (err) {
+      console.error('Database email insert error:', err);
+      return res.status(500).json({ error: 'Failed to record sent email in database' });
+    }
+  }
+
+  // In-memory fallback
+  const newEmail = {
+    id: Date.now(),
+    folder: 'sent',
+    from_email: fromEmail,
+    to_email: toEmail,
+    cc: ccEmail,
+    bcc: bccEmail,
+    subject: emailSubject,
+    body: emailBody,
+    status: dispatchStatus,
+    createdAt: new Date().toLocaleString()
+  };
+  inMemoryEmails.unshift(newEmail);
+
+  res.status(201).json({
+    success: true,
+    email: newEmail,
+    deliveryMethod,
+    messageId: sesMessageId,
+    warning: sesError
+  });
+});
+
+// POST /api/emails/receive - Record an incoming/received email in database (Webhook or Simulation)
+app.post('/api/emails/receive', async (req, res) => {
+  const { from, to, cc, bcc, subject, body } = req.body || {};
+
+  const fromEmail = from && from.trim() ? from.trim() : 'sender@gmail.com';
+  const toEmail = to && to.trim() ? to.trim() : defaultFromEmail;
+  const ccEmail = cc ? cc.trim() : '';
+  const bccEmail = bcc ? bcc.trim() : '';
+  const emailSubject = subject && subject.trim() ? subject.trim() : 'New Received Email';
+  const emailBody = body ? body.trim() : 'Email body received via AWS incoming message stream.';
+
+  if (isDbConnected && dbPool) {
+    try {
+      const [result] = await dbPool.query(`
+        INSERT INTO emails (folder, from_email, to_email, cc, bcc, subject, body, status)
+        VALUES ('inbox', ?, ?, ?, ?, ?, ?, 'received')
+      `, [fromEmail, toEmail, ccEmail, bccEmail, emailSubject, emailBody]);
+
+      const [newRow] = await dbPool.query(`
+        SELECT id, folder, from_email, to_email, cc, bcc, subject, body, status,
+               DATE_FORMAT(createdAt, '%d/%m/%Y, %h:%i:%s %p') AS createdAt
+        FROM emails WHERE id = ?
+      `, [result.insertId]);
+
+      return res.status(201).json({ success: true, email: newRow[0] });
+    } catch (err) {
+      console.error('Database receive email error:', err);
+      return res.status(500).json({ error: 'Failed to store received email' });
+    }
+  }
+
+  // In-memory fallback
+  const receivedEmail = {
+    id: Date.now(),
+    folder: 'inbox',
+    from_email: fromEmail,
+    to_email: toEmail,
+    cc: ccEmail,
+    bcc: bccEmail,
+    subject: emailSubject,
+    body: emailBody,
+    status: 'received',
+    createdAt: new Date().toLocaleString()
+  };
+  inMemoryEmails.unshift(receivedEmail);
+
+  res.status(201).json({ success: true, email: receivedEmail });
+});
+
+// DELETE /api/emails/:id - Delete an email
+app.delete('/api/emails/:id', async (req, res) => {
+  const { id } = req.params;
+
+  if (isDbConnected && dbPool) {
+    try {
+      const [result] = await dbPool.query('DELETE FROM emails WHERE id = ?', [id]);
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'Email not found' });
+      }
+      return res.json({ message: 'Email deleted successfully', id });
+    } catch (err) {
+      console.error('Database email delete error:', err);
+      return res.status(500).json({ error: 'Failed to delete email' });
+    }
+  }
+
+  const initialLength = inMemoryEmails.length;
+  inMemoryEmails = inMemoryEmails.filter(e => String(e.id) !== String(id));
+  if (inMemoryEmails.length === initialLength) {
+    return res.status(404).json({ error: 'Email not found' });
+  }
+  res.json({ message: 'Email deleted successfully', id });
+});
+
 // Optional: Serve frontend static build files if present
 const frontendDistPath = path.join(__dirname, '../frontend/dist');
 app.use(express.static(frontendDistPath));
 
 if (require.main === module) {
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Backend server running at http://localhost:${PORT}`);
+    console.log(`Backend server running at http://0.0.0.0:${PORT}`);
   });
 }
 

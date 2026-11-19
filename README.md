@@ -1,109 +1,91 @@
-# Simple Notes Application (React + Node.js + SQL + AWS S3)
+# Cloud Workspace (React + Node.js + SQL + AWS S3 + AWS SES)
 
-A full-stack note application built with **React** (frontend), **Node.js / Express** (backend), **MySQL / In-Memory** (database), and **AWS S3** (cloud file storage).
+A full-stack cloud application featuring:
+1. **📝 Notes & Documents**: In-memory or MySQL database persistence.
+2. **📁 AWS S3 File Storage**: Direct file and image uploads to an AWS S3 bucket.
+3. **✉️ Email & Message System (AWS SES)**:
+   - **Inbox**: Stored received emails from MySQL database.
+   - **Compose & Send**: Send emails with **To, From, Subject, Cc, and Bcc** via **AWS SES** directly to external mailboxes (such as Gmail).
+   - **Reply & Search**: Filter emails in real time and reply directly to incoming messages.
 
 ---
 
 ## 🚀 Running on Localhost
 
-### 1. Configure Environment Variables (Optional for S3 & MySQL)
-In `backend/`, copy the example file to `.env`:
-```bash
-cp backend/.env.example backend/.env
-```
-Inside `backend/.env`:
+### 1. Configure Environment Variables
+Inside `backend/.env` (see `backend/.env.example`):
 ```env
 PORT=5000
 
-# Database (Leave as localhost; if MySQL is not running, it gracefully falls back to in-memory)
+# Database (Leave as localhost or RDS endpoint)
 DB_HOST=localhost
 DB_USER=root
 DB_PASSWORD=
 DB_NAME=notesdb
 DB_PORT=3306
 
-# AWS S3 Configuration (for cloud file uploads)
-AWS_ACCESS_KEY_ID=your_access_key
-AWS_SECRET_ACCESS_KEY=your_secret_key
+# AWS Credentials (shared for S3 and SES)
+AWS_ACCESS_KEY_ID=your_aws_access_key
+AWS_SECRET_ACCESS_KEY=your_aws_secret_key
 AWS_REGION=us-east-1
-AWS_BUCKET_NAME=your-bucket-name
+
+# AWS S3 Bucket (for file uploads)
+AWS_BUCKET_NAME=your-s3-bucket-name
+
+# AWS SES (for sending emails to Gmail/other providers)
+AWS_SES_FROM_EMAIL=your-verified-email@gmail.com
 ```
-> 💡 **Graceful Fallback**: If AWS S3 credentials are not configured, files upload to the local `backend/uploads/` folder automatically. If MySQL is not running, notes persist in memory.
+
+> 💡 **Graceful Fallbacks**:
+> - If AWS SES is not configured or in sandbox, emails are saved in the database in simulated mode so you can test sending and receiving without AWS credentials.
+> - If AWS S3 is not configured, file uploads save to `backend/uploads/`.
+> - If MySQL is not running, notes and emails are stored in server memory.
 
 ---
 
-### 2. Start the Backend (Port 5000)
+### 2. Start the Application
+From the project root:
 ```bash
-cd backend
-npm install
-node server.js
+npm start
 ```
-The backend will run at: `http://localhost:5000`
+Open **`http://localhost:5000`** in your browser.
+
+*(For live hot-reloading: run `npm start` in one terminal and `npm run dev` in another).*
 
 ---
 
-### 3. Start the Frontend (Port 3000)
-In a separate terminal:
-```bash
-cd frontend
-npm install
-npm run dev
-```
-Open **`http://localhost:3000`** in your browser.
+## ✉️ Setting up AWS SES to Send to Gmail
 
-> 💡 **Production Build**: You can also just open `http://localhost:5000` directly after starting the backend, as the backend automatically serves the compiled React app!
+1. Open the [AWS SES Console](https://console.aws.amazon.com/ses/).
+2. In the sidebar, click **Identities** > **Create identity**:
+   - Choose **Email address**.
+   - Enter your email (e.g. `your-email@gmail.com`).
+   - Click **Create identity**.
+3. Check your Gmail inbox and click the verification link sent by Amazon Web Services.
+4. Put that verified email as `AWS_SES_FROM_EMAIL` in `backend/.env`.
 
----
-
-## ☁️ AWS S3 Setup Guide
-
-To store uploads in AWS S3:
-1. Create an S3 Bucket in the AWS Console (e.g., `my-notes-bucket`).
-2. Uncheck **Block all public access** if you want uploaded files/images to be viewable directly via URL, or configure a bucket policy:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       {
-         "Sid": "PublicReadGetObject",
-         "Effect": "Allow",
-         "Principal": "*",
-         "Action": "s3:GetObject",
-         "Resource": "arn:aws:s3:::your-bucket-name/*"
-       }
-     ]
-   }
-   ```
-3. Set your bucket's **CORS configuration**:
-   ```json
-   [
-     {
-       "AllowedHeaders": ["*"],
-       "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
-       "AllowedOrigins": ["*"],
-       "ExposeHeaders": []
-     }
-   ]
-   ```
-4. Put your AWS Access Key, Secret Key, Region, and Bucket Name into `backend/.env`.
+> 📌 **Note on SES Sandbox Mode**:  
+> In AWS SES Sandbox mode (default for new accounts), you can send emails to **any verified email address**. To send to arbitrary unverified Gmail addresses, you can verify the recipient email in the SES console or submit a 1-click request to move out of the SES sandbox.
 
 ---
 
 ## 📡 REST API Endpoints
 
+### 📝 Notes & Files
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/notes` | Fetch all notes (sorted newest first) |
+| `GET` | `/api/notes` | Get all notes |
 | `POST` | `/api/notes` | Create a note (`{ title, content, fileUrl, fileName }`) |
-| `POST` | `/api/upload` | Upload file/image to AWS S3 (or local fallback) |
-| `PUT` | `/api/notes/:id` | Update note title, content, or attachment |
-| `DELETE` | `/api/notes/:id` | Delete a note by ID |
-| `GET` | `/api/health` | Health check (reports DB and S3 status) |
+| `POST` | `/api/upload` | Upload file to AWS S3 (or local fallback) |
+| `PUT` | `/api/notes/:id` | Update note |
+| `DELETE` | `/api/notes/:id` | Delete note |
 
----
-
-## ✨ Features
-- **Localhost Readiness**: Runs with 1 command locally without complex server setups.
-- **AWS S3 File Upload**: Direct integration with AWS S3 SDK v3 for images and documents.
-- **Image Previews & Attachments**: Automatically renders thumbnail previews for images and clickable download badges for files.
-- **Dual Fallbacks**: Graceful fallback to local storage if S3 keys are absent, and fallback to in-memory store if MySQL is not running.
+### ✉️ Email & Messages
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/emails?folder=inbox` | Get all received emails stored in database |
+| `GET` | `/api/emails?folder=sent` | Get all sent emails |
+| `POST` | `/api/emails/send` | Send email via AWS SES (`{ from, to, cc, bcc, subject, body }`) |
+| `POST` | `/api/emails/receive` | Record incoming email in database |
+| `DELETE` | `/api/emails/:id` | Delete email from database |
+| `GET` | `/api/health` | Health check for DB, S3, and SES |
