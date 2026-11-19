@@ -267,12 +267,15 @@ export default function App() {
       setComposeBody('');
       setEmailFolder('sent');
 
-      setSuccessMsg(
-        data.deliveryMethod === 'aws-ses'
-          ? `Email successfully sent via AWS SES to ${composeTo}!`
-          : `Email recorded in database as sent (simulated mode)!`
-      );
-      setTimeout(() => setSuccessMsg(null), 5000);
+      if (data.deliveryMethod === 'aws-ses') {
+        setSuccessMsg(`🚀 Real Email sent via AWS SES to ${composeTo}! (Message ID: ${data.messageId})`);
+        setTimeout(() => setSuccessMsg(null), 6000);
+      } else if (data.warning) {
+        setError(`AWS SES Warning: ${data.warning}. (The email was saved to your database).`);
+      } else {
+        setSuccessMsg(`Email recorded in database as sent!`);
+        setTimeout(() => setSuccessMsg(null), 5000);
+      }
     } catch (err) {
       setError(err.message || 'Failed to send email.');
     } finally {
